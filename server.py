@@ -18,7 +18,10 @@ import pandas as pd
 from mcp.server.fastmcp import FastMCP
 
 # ── Server instance ──────────────────────────────────────────────────────────
-mcp = FastMCP("financial-data")
+# Port 8002 for HTTP/SSE mode (stdio is default for Claude Desktop / agents)
+MCP_HOST = "127.0.0.1"
+MCP_PORT = 8002
+mcp = FastMCP("financial-data", host=MCP_HOST, port=MCP_PORT)
 
 # ── Simple in-memory cache ───────────────────────────────────────────────────
 _cache: dict = {}
@@ -197,5 +200,15 @@ def get_technicals(symbol: str, period: str = "6mo") -> str:
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
+# Usage:
+#   python server.py          → stdio  (Claude Desktop / MCP agents)
+#   python server.py http     → streamable-http on http://127.0.0.1:8002/mcp
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import sys
+    transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
+    if transport == "http":
+        print(f"\n  Financial Data MCP Server (streamable-http)")
+        print(f"  MCP endpoint: http://{MCP_HOST}:{MCP_PORT}/mcp\n")
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
