@@ -50,6 +50,9 @@ def route_technicals():
 
 
 if __name__ == "__main__":
-    print("\n  Financial Data MCP Server (HTTP mode)")
-    print("  Listening on http://127.0.0.1:8001\n")
-    app.run(host="127.0.0.1", port=8001, debug=False)
+    import os
+    port = int(os.environ.get("PORT", 8001))
+    host = "0.0.0.0"
+    print(f"\n  Financial Data MCP Server (HTTP mode)")
+    print(f"  Listening on http://{host}:{port}\n")
+    app.run(host=host, port=port, debug=False)
