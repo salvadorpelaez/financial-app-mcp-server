@@ -8,11 +8,22 @@ Run with: python http_server.py
 Listens on: http://127.0.0.1:8001
 """
 
+import os
 from flask import Flask, request, jsonify
 from server import get_market_data, get_fundamentals, get_technicals
 import json
 
 app = Flask(__name__)
+
+MCP_API_KEY = os.environ.get("MCP_API_KEY")
+
+
+@app.before_request
+def require_api_key():
+    if request.path == "/health":
+        return
+    if not MCP_API_KEY or request.headers.get("X-API-Key") != MCP_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
 
 
 @app.route("/health")
