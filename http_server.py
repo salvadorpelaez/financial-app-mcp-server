@@ -10,7 +10,7 @@ Listens on: http://127.0.0.1:8001
 
 import os
 from flask import Flask, request, jsonify
-from server import get_market_data, get_fundamentals, get_technicals
+from server import get_market_data, get_fundamentals, get_technicals, get_pro_brief_data
 import json
 
 app = Flask(__name__)
@@ -57,6 +57,13 @@ def route_technicals():
         symbol=body.get("symbol", ""),
         period=body.get("period", "6mo"),
     )
+    return app.response_class(result, mimetype="application/json")
+
+
+@app.route("/tools/get_pro_brief_data", methods=["POST"])
+def route_pro_brief_data():
+    body = request.get_json(force=True) or {}
+    result = get_pro_brief_data(symbol=body.get("symbol", ""))
     return app.response_class(result, mimetype="application/json")
 
 

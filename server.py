@@ -199,6 +199,175 @@ def get_technicals(symbol: str, period: str = "6mo") -> str:
         return json.dumps({"error": str(e)})
 
 
+# ── Tool: get_pro_brief_data ─────────────────────────────────────────────────
+@mcp.tool()
+def get_pro_brief_data(symbol: str) -> str:
+    """
+    Fetch the full data bundle needed for a Valerius Pro Brief in a single call.
+
+    Runs every Yahoo/yfinance request server-side so callers on IPs that Yahoo
+    rate-limits (e.g. serverless platforms) don't hit HTTP 401 errors. Returns
+    the same shape the webapp's data_retriever.retrieve() produces.
+
+    Args:
+        symbol: Ticker symbol (e.g. 'AAPL')
+
+    Returns:
+        JSON string with price, valuation, analyst consensus, firm ratings,
+        news, upcoming events, and 52-week performance vs SPY — or {"error": ...}.
+    """
+    cache_key = f"pro_brief:{symbol}"
+    cached = _get_cache(cache_key)
+    if cached:
+        return cached
+
+    try:
+        t = yf.Ticker(symbol.upper())
+        fi = t.fast_info
+        info = t.info or {}
+
+        price = fi.last_price
+        prev = fi.previous_close
+        if price is None or prev is None:
+            return json.dumps({"error": f"No price data for '{symbol.upper()}' — check the ticker symbol"})
+
+        chg_pct = ((price - prev) / prev) * 100 if prev else 0
+        hi52 = fi.year_high
+        lo52 = fi.year_low
+        pos = ((price - lo52) / (hi52 - lo52)) * 100 if hi52 and lo52 and hi52 != lo52 else 0
+
+        # Cash / debt
+        total_cash = info.get("totalCash")
+        total_debt = info.get("totalDebt")
+
+        def fmt_b(v):
+            return f"${v/1e9:.2f}B" if abs(v) >= 1e9 else f"${v/1e6:.0f}M"
+
+        cash_debt = None
+        if total_cash is not None and total_debt is not None:
+            net = total_cash - total_debt
+            cash_debt = {"cash": fmt_b(total_cash), "debt": fmt_b(total_debt), "net": fmt_b(net)}
+
+        # Valuation
+        trailing_pe = info.get("trailingPE")
+        forward_pe = info.get("forwardPE")
+        target_mean = info.get("targetMeanPrice")
+        rev_growth = info.get("revenueGrowth")
+        profit_margin = info.get("profitMargins")
+
+        # Analyst consensus
+        rec_key = info.get("recommendationKey", "").upper()
+        rec_mean = info.get("recommendationMean")
+        num_analysts = info.get("numberOfAnalystOpinions")
+
+        # Individual firm ratings (90-day window, top 5 priority firms)
+        BIG_FIRMS = [
+            "Goldman Sachs", "Morgan Stanley", "JPMorgan", "J.P. Morgan",
+            "Bank of America", "BofA", "Wells Fargo", "Citigroup", "Citi",
+            "Barclays", "UBS", "Deutsche Bank", "Jefferies", "Piper Sandler",
+            "KeyBanc", "Raymond James", "RBC Capital", "Needham", "Truist",
+        ]
+        firm_ratings = []
+        try:
+            ud = t.upgrades_downgrades
+            if ud is not None and not ud.empty:
+                ud = ud.reset_index()
+                date_col = next((c for c in ["GradeDate", "Date", "date"] if c in ud.columns), None)
+                if date_col:
+                    ud[date_col] = pd.to_datetime(ud[date_col], utc=True)
+                    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=90)
+                    ud = ud[ud[date_col] >= cutoff].sort_values(date_col, ascending=False)
+                seen = set()
+                rows = []
+                for _, row in ud.iterrows():
+                    firm = str(row.get("Firm", "")).strip()
+                    grade = str(row.get("ToGrade", "")).strip()
+                    if not firm or not grade or grade.lower() == "nan":
+                        continue
+                    fk = firm.lower()
+                    if fk not in seen:
+                        seen.add(fk)
+                        rows.append((firm, grade))
+                priority = [(f, g) for f, g in rows if any(b.lower() in f.lower() for b in BIG_FIRMS)]
+                others = [(f, g) for f, g in rows if not any(b.lower() in f.lower() for b in BIG_FIRMS)]
+                firm_ratings = (priority + others)[:5]
+        except Exception:
+            pass
+
+        # News (top 3)
+        news_headlines = []
+        try:
+            for n in (t.news or [])[:3]:
+                title = n.get("content", {}).get("title", "") or n.get("title", "")
+                if title:
+                    news_headlines.append(title)
+        except Exception:
+            pass
+
+        # Upcoming events
+        earnings_str = None
+        try:
+            cal = t.calendar
+            if cal and "Earnings Date" in cal:
+                ed = cal["Earnings Date"]
+                if isinstance(ed, (list, tuple)) and ed:
+                    first = ed[0]
+                    earnings_str = first.strftime("%b %d, %Y") if hasattr(first, "strftime") else str(first)[:10]
+                elif hasattr(ed, "strftime"):
+                    earnings_str = ed.strftime("%b %d, %Y")
+        except Exception:
+            pass
+
+        ex_div_str = None
+        ex_div_ts = info.get("exDividendDate")
+        if ex_div_ts:
+            try:
+                ex_div_str = datetime.utcfromtimestamp(ex_div_ts).strftime("%b %d, %Y")
+            except Exception:
+                pass
+
+        # 52-week performance vs S&P 500
+        spy_chg = None
+        try:
+            hist = t.history(period="1y")
+            spy_hist = yf.Ticker("SPY").history(period="1y")
+            if not hist.empty and not spy_hist.empty:
+                stock_ret = (hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100
+                spy_ret = (spy_hist["Close"].iloc[-1] / spy_hist["Close"].iloc[0] - 1) * 100
+                spy_chg = {"stock_1y": round(stock_ret, 1), "spy_1y": round(spy_ret, 1), "alpha": round(stock_ret - spy_ret, 1)}
+        except Exception:
+            pass
+
+        result = json.dumps({
+            "ticker": symbol.upper(),
+            "name": info.get("longName", symbol.upper()),
+            "price": round(price, 2),
+            "chg_pct": round(chg_pct, 2),
+            "hi52": round(hi52, 2) if hi52 else None,
+            "lo52": round(lo52, 2) if lo52 else None,
+            "pos52": round(pos, 0),
+            "cash_debt": cash_debt,
+            "trailing_pe": round(trailing_pe, 1) if trailing_pe else None,
+            "forward_pe": round(forward_pe, 1) if forward_pe else None,
+            "target_mean": round(target_mean, 2) if target_mean else None,
+            "rev_growth": round(rev_growth * 100, 1) if rev_growth else None,
+            "profit_margin": round(profit_margin * 100, 1) if profit_margin else None,
+            "rec_key": rec_key,
+            "rec_mean": round(rec_mean, 2) if rec_mean else None,
+            "num_analysts": num_analysts,
+            "firm_ratings": firm_ratings,
+            "news_headlines": news_headlines,
+            "earnings_str": earnings_str,
+            "ex_div_str": ex_div_str,
+            "spy_chg": spy_chg,
+        })
+        _set_cache(cache_key, result)
+        return result
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 # Usage:
 #   python server.py          → stdio  (Claude Desktop / MCP agents)
