@@ -89,6 +89,62 @@ def get_market_data(
         return json.dumps({"error": str(e)})
 
 
+# ── Tool: get_bulk_prices ────────────────────────────────────────────────────
+@mcp.tool()
+def get_bulk_prices(symbols: list[str]) -> str:
+    """
+    Fetch the latest price and daily change for many tickers in one call.
+
+    Runs the yfinance bulk download server-side so callers on rate-limited
+    IPs (e.g. Vercel serverless) don't get blocked by Yahoo.
+
+    Args:
+        symbols: list of ticker symbols in yfinance notation (e.g. ['AAPL','BRK-B'])
+
+    Returns:
+        JSON string: {"SYMBOL": {"price": float|"N/A", "change": float,
+        "change_percent": float}, ...} keyed by upper-cased symbol.
+    """
+    syms = [s.upper().strip() for s in (symbols or []) if s and s.strip()]
+    if not syms:
+        return json.dumps({})
+
+    try:
+        # 5d (not 2d): today's daily bar is often NaN until the close is
+        # finalized, so we drop NaNs and use the last two *valid* closes.
+        data = yf.download(syms, period="5d", interval="1d",
+                           progress=False, timeout=30)
+        close = data["Close"]
+        multi = hasattr(close, "columns")  # DataFrame => multiple tickers
+
+        out = {}
+        for s in syms:
+            try:
+                if multi and s not in close.columns:
+                    out[s] = {"price": "N/A", "change": 0, "change_percent": 0}
+                    continue
+                series = (close[s] if multi else close).dropna()
+                if series.empty:
+                    out[s] = {"price": "N/A", "change": 0, "change_percent": 0}
+                    continue
+                cur = series.iloc[-1]
+                prev = series.iloc[-2] if len(series) > 1 else cur
+                chg = cur - prev
+                chg_pct = (chg / prev * 100) if prev else 0
+                if pd.isna(chg):
+                    chg = 0.0
+                if pd.isna(chg_pct):
+                    chg_pct = 0.0
+                out[s] = {"price": float(cur), "change": float(chg),
+                          "change_percent": float(chg_pct)}
+            except Exception:
+                out[s] = {"price": "N/A", "change": 0, "change_percent": 0}
+        return json.dumps(out)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 # ── Tool: get_fundamentals ───────────────────────────────────────────────────
 @mcp.tool()
 def get_fundamentals(symbol: str) -> str:
