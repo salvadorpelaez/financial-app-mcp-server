@@ -382,6 +382,27 @@ def get_pro_brief_data(symbol: str) -> str:
             except Exception:
                 pass
 
+        # Dividends — yield computed as rate/price (never info['dividendYield'],
+        # which is unreliable); ETFs often lack dividendRate → trailing-12mo sum
+        div_rate = info.get("dividendRate")
+        last_div = None
+        try:
+            divs = t.dividends
+            if divs is not None and len(divs):
+                last_div = round(float(divs.iloc[-1]), 4)
+                if ex_div_str is None:
+                    # dividends series is indexed by ex-date — covers ETFs, where
+                    # info['exDividendDate'] is absent
+                    ex_div_str = divs.index[-1].strftime("%b %d, %Y")
+                if div_rate is None:
+                    cutoff = pd.Timestamp.now(tz=divs.index.tz) - pd.Timedelta(days=365)
+                    ttm = divs[divs.index >= cutoff]
+                    if len(ttm):
+                        div_rate = round(float(ttm.sum()), 4)
+        except Exception:
+            pass
+        div_yield = round((div_rate / price) * 100, 2) if div_rate and price else None
+
         # 52-week performance vs S&P 500
         spy_chg = None
         try:
@@ -415,6 +436,9 @@ def get_pro_brief_data(symbol: str) -> str:
             "news_headlines": news_headlines,
             "earnings_str": earnings_str,
             "ex_div_str": ex_div_str,
+            "div_rate": div_rate,
+            "div_yield": div_yield,
+            "last_div": last_div,
             "spy_chg": spy_chg,
         })
         _set_cache(cache_key, result)
