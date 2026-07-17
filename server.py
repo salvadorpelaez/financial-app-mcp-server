@@ -448,6 +448,85 @@ def get_pro_brief_data(symbol: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+# ── Tool: get_dividend_screen ────────────────────────────────────────────────
+@mcp.tool()
+def get_dividend_screen(symbols: list[str]) -> str:
+    """
+    Fetch trailing-12-month dividend data for many tickers in one batched call.
+
+    One yf.download(actions=True) request covers prices AND dividend history
+    for the whole list, so a 50-70 ticker screen (Dividend Kings/Aristocrats)
+    completes in seconds instead of one info call per ticker. Yield is computed
+    as TTM dividend sum / last close (never info['dividendYield']).
+
+    Args:
+        symbols: list of ticker symbols in yfinance notation (e.g. ['KO','BF-B'])
+
+    Returns:
+        JSON string keyed by upper-cased symbol:
+        {"KO": {"price": float, "ttm_rate": float|null, "yield_pct": float|null,
+                "last_div": float|null, "last_ex_date": "YYYY-MM-DD"|null,
+                "freq": "M"|"Q"|null, "pays": bool}, ...}
+    """
+    syms = [s.upper().strip() for s in (symbols or []) if s and s.strip()]
+    if not syms:
+        return json.dumps({})
+
+    cache_key = "div_screen:" + ",".join(sorted(syms))
+    cached = _get_cache(cache_key)
+    if cached:
+        return cached
+
+    try:
+        df = yf.download(
+            syms, period="1y", actions=True, progress=False,
+            group_by="ticker", auto_adjust=False, threads=True,
+        )
+        out = {}
+        for s in syms:
+            try:
+                sub = df[s] if len(syms) > 1 else df
+                closes = sub["Close"].dropna()
+                if closes.empty:
+                    out[s] = {"error": "no price data"}
+                    continue
+                price = float(closes.iloc[-1])
+
+                divs = sub["Dividends"].fillna(0)
+                divs = divs[divs > 0]
+                ttm = round(float(divs.sum()), 4) if len(divs) else 0.0
+                last_div = round(float(divs.iloc[-1]), 4) if len(divs) else None
+                last_ex = divs.index[-1].strftime("%Y-%m-%d") if len(divs) else None
+                dyield = round((ttm / price) * 100, 2) if ttm and price else None
+
+                freq = None
+                if len(divs) >= 3:
+                    dates = divs.index[-3:]
+                    avg = sum((dates[i + 1] - dates[i]).days for i in range(2)) / 2
+                    freq = "M" if avg < 45 else "Q"
+                elif len(divs) == 2:
+                    freq = "M" if (divs.index[1] - divs.index[0]).days < 45 else "Q"
+
+                out[s] = {
+                    "price": round(price, 2),
+                    "ttm_rate": ttm if ttm else None,
+                    "yield_pct": dyield,
+                    "last_div": last_div,
+                    "last_ex_date": last_ex,
+                    "freq": freq,
+                    "pays": bool(ttm),
+                }
+            except Exception as e:
+                out[s] = {"error": str(e)[:80]}
+
+        result = json.dumps(out)
+        _set_cache(cache_key, result)
+        return result
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 # Usage:
 #   python server.py          → stdio  (Claude Desktop / MCP agents)
