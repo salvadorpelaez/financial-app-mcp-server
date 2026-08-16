@@ -39,6 +39,35 @@ def _set_cache(key: str, data):
     _cache[key] = {"data": data, "ts": time.time()}
 
 
+# ── Dividend frequency classification ────────────────────────────────────────
+# Upper bound in days for each payment-interval bucket, in order. Cut points sit
+# between the real spacings they separate: 7 (weekly), ~30 (monthly), ~91
+# (quarterly), ~182 (semi-annual), ~365 (annual).
+# Kept deliberately identical to _DIV_FREQUENCY_BUCKETS in the Valerius app.py —
+# both surfaces render the same badge, so they must agree. Change one, change both.
+_DIV_FREQUENCY_BUCKETS = (
+    (10, "W"),
+    (45, "M"),
+    (135, "Q"),
+    (270, "S"),
+)
+
+
+def _classify_dividend_frequency(intervals):
+    """Map observed day-gaps between dividend payments to a W/M/Q/S/A code.
+
+    Uses the median so one off-cycle special or supplemental payment cannot move
+    the answer. Returns None when there is nothing to measure."""
+    if not intervals:
+        return None
+    import statistics
+    typical = statistics.median(intervals)
+    for upper, code in _DIV_FREQUENCY_BUCKETS:
+        if typical < upper:
+            return code
+    return "A"
+
+
 # ── Tool: get_market_data ────────────────────────────────────────────────────
 @mcp.tool()
 def get_market_data(
@@ -466,7 +495,7 @@ def get_dividend_screen(symbols: list[str]) -> str:
         JSON string keyed by upper-cased symbol:
         {"KO": {"price": float, "ttm_rate": float|null, "yield_pct": float|null,
                 "last_div": float|null, "last_ex_date": "YYYY-MM-DD"|null,
-                "freq": "M"|"Q"|null, "pays": bool}, ...}
+                "freq": "W"|"M"|"Q"|"S"|"A"|null, "pays": bool}, ...}
     """
     syms = [s.upper().strip() for s in (symbols or []) if s and s.strip()]
     if not syms:
@@ -500,12 +529,10 @@ def get_dividend_screen(symbols: list[str]) -> str:
                 dyield = round((ttm / price) * 100, 2) if ttm and price else None
 
                 freq = None
-                if len(divs) >= 3:
-                    dates = divs.index[-3:]
-                    avg = sum((dates[i + 1] - dates[i]).days for i in range(2)) / 2
-                    freq = "M" if avg < 45 else "Q"
-                elif len(divs) == 2:
-                    freq = "M" if (divs.index[1] - divs.index[0]).days < 45 else "Q"
+                if len(divs) >= 2:
+                    dates = divs.index[-7:]
+                    intervals = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
+                    freq = _classify_dividend_frequency(intervals)
 
                 out[s] = {
                     "price": round(price, 2),
