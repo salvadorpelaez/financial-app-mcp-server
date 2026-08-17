@@ -507,8 +507,18 @@ def get_dividend_screen(symbols: list[str]) -> str:
         return cached
 
     try:
+        # 2y, not 1y. Frequency needs at least two payments to measure a gap, and
+        # an annual payer only ever has one inside a 12-month window — so annual
+        # and semi-annual payers came back with no badge at all while the Valerius
+        # Explore path, which reads full history, reported them correctly. Two
+        # surfaces, two answers for the same security.
+        #
+        # The trailing-12-month figures are now sliced explicitly below. They used
+        # to be "TTM" only as an accident of the window being exactly one year;
+        # widening it without that slice would have roughly doubled every yield on
+        # the screen, which is a far worse defect than the one being fixed.
         df = yf.download(
-            syms, period="1y", actions=True, progress=False,
+            syms, period="2y", actions=True, progress=False,
             group_by="ticker", auto_adjust=False, threads=True,
         )
         out = {}
@@ -523,10 +533,22 @@ def get_dividend_screen(symbols: list[str]) -> str:
 
                 divs = sub["Dividends"].fillna(0)
                 divs = divs[divs > 0]
-                ttm = round(float(divs.sum()), 4) if len(divs) else 0.0
+
+                # Rate and yield are trailing-twelve-month by definition, so they
+                # are sliced to 365 days rather than summing the whole window.
+                if len(divs):
+                    cutoff = pd.Timestamp.now(tz=divs.index.tz) - pd.Timedelta(days=365)
+                    ttm_divs = divs[divs.index >= cutoff]
+                else:
+                    ttm_divs = divs
+                ttm = round(float(ttm_divs.sum()), 4) if len(ttm_divs) else 0.0
+                dyield = round((ttm / price) * 100, 2) if ttm and price else None
+
+                # Last payment and frequency read the full window: the most recent
+                # payment is the most recent one whenever it happened, and an
+                # annual payer needs more than 12 months of history to classify.
                 last_div = round(float(divs.iloc[-1]), 4) if len(divs) else None
                 last_ex = divs.index[-1].strftime("%Y-%m-%d") if len(divs) else None
-                dyield = round((ttm / price) * 100, 2) if ttm and price else None
 
                 freq = None
                 if len(divs) >= 2:
