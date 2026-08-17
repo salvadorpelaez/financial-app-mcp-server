@@ -1,5 +1,15 @@
-mcp[cli]
-yfinance
-pandas
-flask
-gunicorn
+# PINNED. These were unpinned until 2026-08-16, when a push that changed only the
+# dividend frequency classifier took the service down with a 502. The code was
+# fine; the push triggered the first rebuild since 2026-07-16, and `mcp[cli]`
+# resolved to 2.0.0 (released 2026-07-28), which removed `mcp.server.fastmcp`.
+# server.py imports FastMCP from there, http_server.py imports server, so gunicorn
+# died on boot. Any push would have done it — the deploy was one rebuild away from
+# breaking for a month.
+#
+# Versions below are the ones verified to import and serve correctly.
+# Re-pin deliberately, one package at a time, and confirm the service boots.
+mcp[cli]==1.27.0
+yfinance==1.2.0
+pandas==3.0.1
+flask==3.1.3
+gunicorn==26.0.0
